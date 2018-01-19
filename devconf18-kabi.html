@@ -1,0 +1,257 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+ "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"> 
+<head> 
+  <title>How to Trim Your Debug Info</title> 
+  <meta name="copyright" 
+   content="Copyright &#169; 2017 Stanislav Kozina <skozina@redhat.com>" /> 
+  <link rel="stylesheet" type="text/css" media="screen, projection, print" 
+   href="styles/slidy.css" /> 
+  <link rel="stylesheet" type="text/css" media="screen, projection, print"
+   href="styles/w3c-blue.css" />
+  <script src="scripts/slidy.js" charset="utf-8"
+   type="text/javascript"></script> 
+  <link rel="stylesheet" type="text/css" href="styles/ersin.css" />
+</head>
+
+<body>
+
+<div class="background"> 
+  <img src="images/Logo_RH_RGB_Default.png" alt="RH logo" id="head-logo" />
+</div>
+ 
+<div class="slide cover"> 
+ <div>
+ <img src="images/Logo_RH_RGB_Default.png" alt="RH logo" class="cover" /> 
+ <br clear="all" />            
+ <h1>Detecting the Linux kernel ABI changes</h1> 
+ <h2>Agenda</h2>
+ <p>Stanislav Kozina<br>
+ Associate Manager, Software Engineering, Red Hat<br>
+ &copy; January 2018</p> 
+ </div>
+</div> 
+
+<div class="slide">
+	<h1>Motivation</h1>
+	<ul>
+		<li>There are cool kernel modules out there</li>
+		<ul>
+			<li>openafs, openzfs</li>
+		</ul>
+		<li>Linux has stable userland ABI (uapi)</li>
+		<ul>
+			<li>If kernel change breaks your application, it's a kernel bug</li>
+			<li>But there's no stable interface for the kernel modules</li>
+		</ul>
+	</ul>
+</div> 
+
+<div class="slide">
+	<h1>Mandatory slide</h1>
+	<ul>
+		<li>API</li>
+		<ul>
+			<li>So you don't need to modify your source code to use it</li>
+		</ul>
+		<li>ABI</li>
+		<ul>
+			<li>So you don't need to re-build your software when you use it</li>
+			<li>Which obviously doesn't apply to interpreted languages</li>
+			<li>Need consensus of the compilers</li>
+		</ul>
+	</ul>
+</div> 
+
+<div class="slide">
+	<h1>Traditional way</h1>
+	<ul>
+		<li>CONFIG_MODVERSIONS</li>
+		<li>Generates symbol checksum for each exported symbol</li>
+		<li>If all used symbol checksums matches, you can load your module</li>
+	</ul>
+<pre>
+$ cat mymod.c
+void myfunc(int arg)
+{
+	printk("myfunc called with %d\n", arg);
+}
+EXPORT_SYMBOL(myfunc);
+
+$ nm mymod.ko | grep ' A '
+0000000079a79b39 A __crc_myfunc
+
+$ modprobe --dump-modversions mymod.ko
+0x29d34c35	module_layout
+0x27e1a049	printk
+0xbdfb6dbb	__fentry__
+</pre>
+	<ul>
+		<li>Exported symbols stored in __ksymtab</li>
+		<li>Symbols <em>provided</em> by this module are stored in a symbol table as absolute symbols</li>
+		<li>Symbols <em>required</em> by this module are stored in section <em>__versions</em></li>
+	</ul>
+</div> 
+
+<div class="slide">
+	<h1>Traditional way details</h1>
+<pre>
+$ gcc -E -D__GENKSYMS__ ... file.c | scripts/genksyms/genksyms -r /dev/null
+__crc_myfunc = 0x79a79b39;
+$ ld -r -o file.o .tmp_mymod.o -T ...
+$ nm file.o | grep __crc_myfunc
+0000000079a79b39 A __crc_myfunc
+</pre>
+		<ul>
+			<li>The provided symbols are also stored in Module.symvers by <em>modpost</em></li>
+		</ul>
+<pre>
+$ cat Module.symvers
+0x79a79b39	myfunc	/home/ersin/Code/ersinmod/mymod	EXPORT_SYMBOL
+</pre>
+		<ul>
+			<li>Other modules can use Module.symvers to depend on these symbols</li>
+			<li>Required symbols and modules are stored in section <em>__versions</em> by <em>modpost</em></li>
+		</ul>
+<pre>
+static const struct modversion_info ____versions[]
+__used
+__attribute__((section("__versions"))) = {
+	{ 0x29d34c35, __VMLINUX_SYMBOL_STR(module_layout) },
+	{ 0x27e1a049, __VMLINUX_SYMBOL_STR(printk) },
+	{ 0xbdfb6dbb, __VMLINUX_SYMBOL_STR(__fentry__) },
+};
+</pre>
+		<ul>
+			<li>Which is later used by depmod to build the module dependency graph</li>
+		</ul>
+</div> 
+
+<div class="slide">
+	<h1>Neat tricks with genksyms</h1>
+<pre>
+$ cat mymod.c
+typedef struct foo {
+	int a, b;
+} foo_t;
+
+void myfunc(foo_t *arg)
+{
+	printk("myfunc called with %d\n", arg-&gt;a);
+}
+EXPORT_SYMBOL(myfunc);
+</pre>
+<pre>
+$ gcc -E -D__GENKSYMS__ ... file.c | scripts/genksyms/genksyms -T file.symtypes -r /dev/null
+__crc_myfunc = 0x79a79b39;
+
+$ cat file.symtypes
+s#foo struct foo { int a , b ; }
+t#foo_t typedef s#foo foo_t
+myfunc void myfunc ( t#foo_t * )
+</pre>
+</div> 
+
+<div class="slide">
+	<h1>Issues</h1>
+<pre>
+$ cat mymod.c
+typedef struct foo {
+	int a;
+	int b;
+} foo_t;
+
+void myfunc(foo_t *arg)
+{
+	printk("myfunc called with %d\n", arg-&gt;a);
+}
+EXPORT_SYMBOL(myfunc);
+</pre>
+<pre>
+$ gcc -E -D__GENKSYMS__ ... file.c | scripts/genksyms/genksyms -T file.symtypes -r /dev/null
+__crc_myfunc = 0xd8d2483c;
+
+$ cat file.symtypes
+s#foo struct foo { int a ; int b ; }
+t#foo_t typedef s#foo foo_t
+myfunc void myfunc ( t#foo_t * )
+</pre>
+<p>0x79a79b39 != 0xd8d2483c</p>
+</div>
+
+<div class="slide">
+	<h1>Solution: dwarf!</h1>
+<pre>
+$ grep DEBUG_INFO linux/.config
+CONFIG_DEBUG_INFO=y
+</pre>
+<table>
+<tr>
+<td>
+<pre>
+typedef struct foo {
+	int a;
+	int b;
+} foo_t;
+</pre>
+</td>
+<td>
+<pre>
+typedef struct foo {
+	int a, b;
+	int c;
+} foo_t;
+</pre>
+</td>
+</tr>
+<tr>
+<td>
+<pre>
+./kabi-dw generate -o output2 ./mymod.ko
+</pre>
+</td>
+<td>
+<pre>
+./kabi-dw generate -o output ./mymod.ko
+</pre>
+</td>
+</tr>
+<tr>
+<td colspan=2>
+<pre>
+./kabi-dw compare output output2
+Changes detected in: struct--foo.txt
+Added:
++0x8 int c;
+
+</pre>
+</td>
+</tr>
+</table>
+</div>
+
+<div class="slide">
+	<h1>Thinking aloud</h1>
+<ul>
+	<li>genksyms can be easily replaced by reading the DWARF data</li>
+	<ul>
+		<li>Just xor the hashes of the base types<li>
+	</ul>
+	<li>It would help to understand the semantics of the code</li>
+	<li>It would not solve all the issues</li>
+	<ul>
+		<li>Declarations: How deep do you go for compatibility checks?<li>
+	</ul>
+</ul>
+</div>
+
+<div class="slide cover"> 
+ <div>
+ <img src="images/Logo_RH_RGB_Default.png" alt="RH logo" class="cover" /> 
+ <br clear="all" />            
+ <h1>Thank you!</h1> 
+ </div>
+</div> 
+
+</body>
+</html>
