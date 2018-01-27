@@ -25,7 +25,7 @@
  <img src="images/Logo_RH_RGB_Default.png" alt="RH logo" class="cover" /> 
  <br clear="all" />            
  <h1>Detecting the Linux kernel ABI changes</h1> 
- <h2>Agenda</h2>
+ <h2>$ whoami</h2>
  <p>Stanislav Kozina<br>
  Associate Manager, Software Engineering, Red Hat<br>
  &copy; January 2018</p> 
@@ -45,6 +45,9 @@
 			<li>But there's no stable interface for the kernel modules</li>
 		</ul>
 	</ul>
+<pre>
+$ less Documentation/process/stable-api-nonsense.rst
+</pre>
 </div> 
 
 <div class="slide">
@@ -85,6 +88,9 @@ $ modprobe --dump-modversions mymod.ko
 0x29d34c35	module_layout
 0x27e1a049	printk
 0xbdfb6dbb	__fentry__
+
+$ readelf -x __versions mymod.ko | grep printk
+  0x00000040 49a0e127 00000000 7072696e 746b0000 I..'....printk..
 </pre>
 	<ul>
 		<li>Exported symbols stored in __ksymtab</li>
@@ -95,22 +101,32 @@ $ modprobe --dump-modversions mymod.ko
 
 <div class="slide">
 	<h1>Traditional way details</h1>
+	<ul>
+	<li><em>EXPORT_SYMBOL</em> macro puts symbol in <em>__ksymtab</em> section (<em>include/linux/export.h</em>)</li>
+	</ul>
+	<ul>
+	<li>Then <em>genksyms</em> is called by <em>cmd_gensymtypes_c</em> from <em>scripts/Makefile.build</em></li>
+	</ul>
 <pre>
 $ gcc -E -D__GENKSYMS__ ... file.c | scripts/genksyms/genksyms -r /dev/null
 __crc_myfunc = 0x79a79b39;
+</pre>
+	<ul>
+	<li>This is used as a linker script by <em>cmd_gensymtypes_c</em> from <em>scripts/Makefile.build</em></li>
+	</ul>
+<pre>
 $ ld -r -o file.o .tmp_mymod.o -T ...
 $ nm file.o | grep __crc_myfunc
 0000000079a79b39 A __crc_myfunc
 </pre>
 		<ul>
-			<li>The provided symbols are also stored in Module.symvers by <em>modpost</em></li>
+			<li>The provided symbols are also stored in Module.symvers by <em>modpost</em> for use by other modules</li>
 		</ul>
 <pre>
 $ cat Module.symvers
 0x79a79b39	myfunc	/home/ersin/Code/ersinmod/mymod	EXPORT_SYMBOL
 </pre>
 		<ul>
-			<li>Other modules can use Module.symvers to depend on these symbols</li>
 			<li>Required symbols and modules are stored in section <em>__versions</em> by <em>modpost</em></li>
 		</ul>
 <pre>
@@ -150,6 +166,18 @@ s#foo struct foo { int a , b ; }
 t#foo_t typedef s#foo foo_t
 myfunc void myfunc ( t#foo_t * )
 </pre>
+<ul>
+<li>This can be also called through the standard Makefiles</li>
+</ul>
+<pre>
+$ grep EXPORT_SYMBOL drivers/net/ethernet/intel/i40e/*
+drivers/net/ethernet/intel/i40e/i40e_client.c:EXPORT_SYMBOL(i40e_register_client);
+drivers/net/ethernet/intel/i40e/i40e_client.c:EXPORT_SYMBOL(i40e_unregister_client);
+$ make drivers/net/ethernet/intel/i40e/i40e_client.symtypes
+...
+$ ls -l drivers/net/ethernet/intel/i40e/i40e_client.symtypes
+-rw-rw-r-- 1 ersin ersin 197729 Jan 27 13:33 drivers/net/ethernet/intel/i40e/i40e_client.symtypes
+</pre>
 </div> 
 
 <div class="slide">
@@ -181,6 +209,10 @@ myfunc void myfunc ( t#foo_t * )
 
 <div class="slide">
 	<h1>Solution: dwarf!</h1>
+<ul>
+	<li>https://github.com/skozina/kabi-dw</li>
+	<li>https://sourceware.org/libabigail/</li>
+</ul>
 <pre>
 $ grep DEBUG_INFO linux/.config
 CONFIG_DEBUG_INFO=y
@@ -241,6 +273,7 @@ Added:
 	<li>It would not solve all the issues</li>
 	<ul>
 		<li>Declarations: How deep do you go for compatibility checks?<li>
+		<li>That is, new #include files still need to be worked around</li>
 	</ul>
 </ul>
 </div>
